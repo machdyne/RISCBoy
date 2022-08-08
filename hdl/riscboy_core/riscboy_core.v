@@ -227,7 +227,7 @@ wire                  lcd_scanout_buf_release;
 //  Masters
 // =============================================================================
 
-hazard5_cpu #(
+hazard5_cpu_1port #(
 	.RESET_VECTOR    (CPU_RESET_VECTOR),
 	.EXTENSION_C     (!CUTDOWN_PROCESSOR),
 	.EXTENSION_M     (!CUTDOWN_PROCESSOR),
