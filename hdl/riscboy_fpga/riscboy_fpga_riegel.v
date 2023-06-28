@@ -1,140 +1,227 @@
+`default_nettype none
+
 module riscboy_fpga (
-	input wire        clk_osc,
+	input  wire                    clk_osc,
 
-	output wire       led,
+//	output wire [7:0]              led,
 
-	output wire       uart_tx,
-	input  wire       uart_rx,
+	output wire                    uart_tx,
+	input  wire                    uart_rx,
+	output wire                    uart_rts,
+	input  wire                    uart_cts,
 
-	input  wire       flash_miso,
-	output wire       flash_mosi,
-	output wire       flash_sclk,
-	output wire       flash_cs,
+/*
+	input  wire                    dpad_u,
+	input  wire                    dpad_d,
+	input  wire                    dpad_l,
+	input  wire                    dpad_r,
+	input  wire                    btn_a,
+*/
 
-   output wire [17:0] sram_a,
-   inout wire [15:0] sram_d,
-   inout wire        sram_ce,
-   inout wire        sram_oe,
-   inout wire        sram_lb,
-   inout wire        sram_ub,
-   inout wire        sram_we,
+	input  wire                    flash_miso,
+	output wire                    flash_mosi,
+	output wire                    flash_sclk,
+	output wire                    flash_cs,
 
-	output wire [3:0]  dvi_p,
-	output wire [3:0]  dvi_n
+   output wire [3:0]              dvi_p,
+   output wire [3:0]              dvi_n,
+
+	output wire [W_SRAM0_ADDR-1:0] sram_addr,
+	inout  wire [15:0]             sram_dq,
+	output wire                    sram_ce_n,
+	output wire                    sram_we_n,
+	output wire                    sram_oe_n,
+	output wire [1:0]              sram_byte_n
 );
 
 `include "gpio_pinmap.vh"
 
 // Clock + Reset resources
 
+wire clk_sys;
 wire clk_bit_unbuffered;
 wire clk_bit;
 wire clk_pix;
-wire clk_sys;
+wire rst_n;
 wire pll_lock;
-wire rst_n_por;
+
+assign sram_ce_n = 0;
 
 pll_48_126 #(
-	.ICE40_PAD (1)
+   .ICE40_PAD (1)
 ) pll_bit (
-	.clock_in  (clk_osc),
-	.clock_out (clk_bit),
-	.clock_out (clk_bit_unbuffered),
+   .clock_in  (clk_osc),
+   .clock_out (clk_bit_unbuffered),
 );
 
 pll_126_36 #(
-	.ICE40_PAD (0)
+   .ICE40_PAD (0)
 ) pll_sys (
    .clock_in  (clk_bit),
    .clock_out (clk_sys),
    .locked    (pll_lock)
 );
 
+reg [4:0] ctr25mhz = 5'b00011;
+
+always @(posedge clk_bit) begin
+	ctr25mhz <= { ctr25mhz[0], ctr25mhz[4:1] };
+end
+
+assign clk_pix = ctr25mhz[0];
+
 SB_GB promote_bit_clock (
-	.USER_SIGNAL_TO_GLOBAL_BUFFER (clk_bit_unbuffered),
-	.GLOBAL_BUFFER_OUTPUT         (clk_bit)
+   .USER_SIGNAL_TO_GLOBAL_BUFFER (clk_bit_unbuffered),
+   .GLOBAL_BUFFER_OUTPUT         (clk_bit)
 );
 
 fpga_reset #(
 	.SHIFT (3),
-	.COUNT (200)
+	.COUNT (200) // need at least 3 us delay before accessing BRAMs on iCE40
 ) rstgen (
-	.clk         (clk_bit),
+	.clk         (clk_sys),
 	.force_rst_n (pll_lock),
-	.rst_n       (rst_n_por)
+	.rst_n       (rst_n)
 );
-
-// Pixel clock: 126 / 5 -> 25.2 MHz
-reg [4:0] clkdiv_pix;
-assign clk_pix = clkdiv_pix[0];
-always @ (posedge clk_bit or negedge rst_n_por)
-	if (!rst_n_por)
-		clkdiv_pix <= 5'b11100;
-	else
-		clkdiv_pix <= {clkdiv_pix[0],  clkdiv_pix[4:1]};
 
 // Instantiate the actual logic
 
+localparam W_SRAM0_ADDR = 18;
+localparam W_SRAM0_DATA = 16;
 localparam N_PADS = N_GPIOS;
 
 wire [N_PADS-1:0] padout;
 wire [N_PADS-1:0] padoe;
 wire [N_PADS-1:0] padin;
 
+wire                      sramphy_clk;
+wire                      sramphy_rst_n;
+wire [W_SRAM0_ADDR-1:0]   sramphy_addr;
+wire [W_SRAM0_DATA-1:0]   sramphy_dq_out;
+wire [W_SRAM0_DATA-1:0]   sramphy_dq_oe;
+wire [W_SRAM0_DATA-1:0]   sramphy_dq_in;
+wire                      sramphy_ce_n;
+wire                      sramphy_we_n;
+wire                      sramphy_oe_n;
+wire [W_SRAM0_DATA/8-1:0] sramphy_byte_n;
+
 riscboy_core #(
-	.BOOTRAM_PRELOAD   ("bootram_init32.hex"),
-
-	.DISPLAY_TYPE      ("DVI"),
-
-	.CUTDOWN_PROCESSOR (1),
-	.STUB_SPI          (1),
-	.STUB_PWM          (1),
-	.NO_SRAM_WRITE_BUF (1),
-	.UART_FIFO_DEPTH   (1)
+	.BOOTRAM_PRELOAD ("bootram_init32.hex")
 ) core (
-	.clk_sys     (clk_sys),
-	.clk_lcd_pix (clk_pix),
-	.clk_lcd_bit (clk_bit),
-	.rst_n       (rst_n_por),
+	.clk_sys        (clk_sys),
+	.clk_lcd_pix    (clk_pix),
+	.clk_lcd_bit    (clk_bit),
+	.rst_n          (rst_n),
 
-	.lcd_pwm     (/* unused */),
+	.lcd_pwm        (/* unused */),
 
-	.uart_tx     (uart_tx),
-	.uart_rx     (uart_rx),
-	.uart_rts    (/* unused */),
-	.uart_cts    (/* unused */),
+	.uart_tx        (uart_tx),
+	.uart_rx        (uart_rx),
+	.uart_rts       (uart_rts),
+	.uart_cts       (uart_cts),
 
-	.spi_sclk    (flash_sclk),
-	.spi_cs      (flash_cs),
-	.spi_sdo     (flash_mosi),
-	.spi_sdi     (flash_miso),
+	.spi_sclk       (flash_sclk),
+	.spi_cs         (flash_cs),
+	.spi_sdo        (flash_mosi),
+	.spi_sdi        (flash_miso),
 
-   .sram_addr   (sram_addr),
-   .sram_dq     (sram_d),
-   .sram_ce_n   (sram_ce_n),
-   .sram_we_n   (sram_we_n),
-   .sram_oe_n   (sram_oe_n),
-   .sram_byte_n ({sram_ub, sram_lb}),
+	.sram_phy_clk   (sramphy_clk),
+	.sram_phy_rst_n (sramphy_rst_n),
+	.sram_addr      (sramphy_addr),
+	.sram_dq_out    (sramphy_dq_out),
+	.sram_dq_oe     (sramphy_dq_oe),
+	.sram_dq_in     (sramphy_dq_in),
+	.sram_ce_n      (sramphy_ce_n),
+	.sram_we_n      (sramphy_we_n),
+	.sram_oe_n      (sramphy_oe_n),
+	.sram_byte_n    (sramphy_byte_n),
 
-	.lcdp        (dvi_p),
-	.lcdn        (dvi_n),
+	.tbio_paddr     (/* unused */),
+	.tbio_psel      (/* unused */),
+	.tbio_penable   (/* unused */),
+	.tbio_pwrite    (/* unused */),
+	.tbio_pwdata    (/* unused */),
+	.tbio_pready    (1'b1),
+	.tbio_pslverr   (1'b0),
+	.tbio_prdata    (32'h0),
 
-	.padout      (padout),
-	.padoe       (padoe),
-	.padin       (padin)
+	.lcdp           (dvi_p),
+	.lcdn           (dvi_n),
+
+	.padout         (padout),
+	.padoe          (padoe),
+	.padin          (padin)
 );
 
-wire blink;
+// SRAM PHY
 
-blinky #(
-   .CLK_HZ   (36_000_000),
-   .BLINK_HZ (1),
-   .FANCY    (0)
-) blinky_u (
-   .clk   (clk_sys),
-   .blink (blink)
+async_sram_phy #(
+	.W_ADDR     (W_SRAM0_ADDR),
+	.W_DATA     (W_SRAM0_DATA),
+	.DQ_SYNC_IN (1)
+) sram_phy_u (
+	.clk         (sramphy_clk),
+	.rst_n       (sramphy_rst_n),
+	.ctrl_addr   (sramphy_addr),
+	.ctrl_dq_out (sramphy_dq_out),
+	.ctrl_dq_oe  (sramphy_dq_oe),
+	.ctrl_dq_in  (sramphy_dq_in),
+	.ctrl_ce_n   (sramphy_ce_n),
+	.ctrl_we_n   (sramphy_we_n),
+	.ctrl_oe_n   (sramphy_oe_n),
+	.ctrl_byte_n (sramphy_byte_n),
+	.sram_addr   (sram_addr),
+	.sram_dq     (sram_dq),
+	.sram_ce_n   (/* unused */),
+	.sram_we_n   (sram_we_n),
+	.sram_oe_n   (sram_oe_n),
+	.sram_byte_n (sram_byte_n)
 );
 
-assign led = blink;
+// GPIO
+
+/*
+pullup_input in_u (
+	.in  (padin[PIN_DPAD_U]),
+	.pad (dpad_u)
+);
+
+pullup_input in_d (
+	.in  (padin[PIN_DPAD_D]),
+	.pad (dpad_d)
+);
+
+pullup_input in_l (
+	.in  (padin[PIN_DPAD_L]),
+	.pad (dpad_l)
+);
+
+pullup_input in_r (
+	.in  (padin[PIN_DPAD_R]),
+	.pad (dpad_r)
+);
+
+pullup_input in_a (
+	.in  (padin[PIN_BTN_A]),
+	.pad (btn_a)
+);
+*/
+
+/*
+assign led = {
+	!uart_tx,
+	!uart_rx,
+	padin[PIN_DPAD_U],
+	padin[PIN_DPAD_D],
+	padin[PIN_DPAD_L],
+	padin[PIN_DPAD_R],
+	padin[PIN_BTN_A],
+	padout[PIN_LED] && padoe[PIN_LED]
+};
+*/
 
 endmodule
+
+`ifndef YOSYS
+`default_nettype wire
+`endif
