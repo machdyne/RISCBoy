@@ -1,9 +1,10 @@
 CHIPNAME=riscboy_hx8kevn
 DOTF=$(HDL)/riscboy_fpga/riscboy_fpga_hx8kevn.f
+TOP=riscboy_fpga
 BOOTAPP=riscboy_bootloader
 
-SYNTH_OPT=-retime
-
+SYNTH_OPT=
+PNR_OPT=--freq 48 --timing-allow-fail
 DEVICE=hx8k
 PACKAGE=ct256
 
@@ -15,7 +16,7 @@ romfiles::
 	@echo
 	make -C $(SOFTWARE)/build APPNAME=$(BOOTAPP) CCFLAGS=-Os
 	cp $(SOFTWARE)/build/$(BOOTAPP)8.hex bootram_init8.hex
-	$(SCRIPTS)/vhexwidth bootram_init8.hex -w 32 -b 0x20080000 -o bootram_init32.hex
+	$(SCRIPTS)/vhexwidth bootram_init8.hex -w 32 -b 0x00100000 -o bootram_init32.hex
 
 clean::
 	make -C $(SOFTWARE)/build APPNAME=$(BOOTAPP) clean

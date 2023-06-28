@@ -27,10 +27,12 @@
 // u = [ u ]   s - s0 = [ raster_offs_x ]   A = [ a_xu  a_yu ]   b = [ b_u ]
 //     [ v ]            [ raster_offs_y ]       [ a_xv  a_yv ]       [ b_v ]
 
+`default_nettype none
+
 module riscboy_ppu_affine_coord_gen #(
 	parameter W_COORD_INT = 10,
 	parameter W_COORD_FRAC = 8,
-	parameter W_BUS_DATA = 32
+	parameter W_CFGDATA = 32
 ) (
 	input  wire                   clk,
 	input  wire                   rst_n,
@@ -40,13 +42,13 @@ module riscboy_ppu_affine_coord_gen #(
 	input  wire [W_COORD_INT-1:0] raster_offs_x, // (s - s0)
 	input  wire [W_COORD_INT-1:0] raster_offs_y,
 
-	input  wire [W_BUS_DATA-1:0]  aparam_data,   // b vector, then A matrix, upper row first
+	input  wire [W_CFGDATA-1:0]   aparam_data,   // b vector, then A matrix, upper row first
 	input  wire                   aparam_vld,
 	output wire                   aparam_rdy,
 
 	output wire [W_COORD_INT-1:0] out_u,
 	output wire [W_COORD_INT-1:0] out_v,
-	output wire                   out_vld,
+	output reg                    out_vld,
 	input  wire                   out_rdy
 );
 
@@ -66,11 +68,14 @@ reg [W_MULCTR-1:0] mul_ctr;
 always @ (posedge clk or negedge rst_n) begin
 	if (!rst_n) begin
 		state <= S_STREAM_SIMPLE;
+		out_vld <= 1'b0;
 		mul_ctr <= {W_MULCTR{1'b0}};
 	end else if (start_simple) begin
 		state <= S_STREAM_SIMPLE;
+		out_vld <= 1'b1;
 	end else if (start_affine) begin
 		state <= S_APARAM0;
+		out_vld <= 1'b0;
 	end else case (state)
 		S_APARAM0: if (aparam_vld && aparam_rdy) state <= S_APARAM1;
 		S_APARAM1: if (aparam_vld && aparam_rdy) state <= S_APARAM2;
@@ -80,8 +85,10 @@ always @ (posedge clk or negedge rst_n) begin
 		end
 		S_MAT_MUL: begin
 			mul_ctr <= mul_ctr - 1'b1;
-			if (~|mul_ctr)
+			if (~|mul_ctr) begin
 				state <= S_STREAM_AFFINE;
+				out_vld <= 1'b1;
+			end
 		end
 		default: begin end
 	endcase
@@ -104,13 +111,12 @@ always @ (posedge clk or negedge rst_n) begin
 end
 
 assign aparam_rdy = state == S_APARAM0 || state == S_APARAM1 || state == S_APARAM2;
-assign out_vld = state == S_STREAM_SIMPLE || state == S_STREAM_AFFINE;
 
 // ----------------------------------------------------------------------------
 // u and v phase accumulators
 
 localparam W_COORD_FULL = W_COORD_INT + W_COORD_FRAC;
-localparam W_APARAM = W_BUS_DATA / 2;
+localparam W_APARAM = W_CFGDATA / 2;
 
 // b coefficients are left-shifted to full significance
 wire [W_COORD_FULL-1:0] aparam_unpack_bu = {aparam_data[       0 +: W_APARAM], {W_COORD_FULL-W_APARAM{1'b0}}};
@@ -134,9 +140,14 @@ wire [W_COORD_FULL-1:0] accum_wdata_v = {
 
 wire op_shift     = state == S_MAT_MUL &&  |mul_ctr;
 wire op_a_unshift = state == S_MAT_MUL && ~|mul_ctr;
-wire accum_add_a  = state == S_MAT_MUL && raster_offs_x_sreg[0] || state == S_STREAM_AFFINE && out_vld && out_rdy;
+wire accum_add_a  = state == S_MAT_MUL && raster_offs_x_sreg[0] || state == S_STREAM_AFFINE;
 wire accum_add_b  = state == S_MAT_MUL && raster_offs_y_sreg[0];
-wire accum_u_incr = state == S_STREAM_SIMPLE && out_vld && out_rdy;
+wire accum_u_incr = state == S_STREAM_SIMPLE;
+
+// Feeding out_rdy into the adders, via accum_add_a or accum_u_incr above, can
+// create a long timing path, because out_rdy is a late signal originating at
+// the bus arbiter. Instead we merge it in late, using a clock enable term:
+wire accum_hold   = out_vld && !out_rdy;
 
 wire [W_COORD_FULL-1:0] phase_u;
 wire [W_COORD_FULL-1:0] phase_v;
@@ -157,6 +168,7 @@ riscboy_ppu_phase_accum #(
 
 	.accum_wdata  (accum_wdata_u),
 	.accum_load   (accum_load),
+	.accum_hold   (accum_hold),
 	.accum_add_a  (accum_add_a),
 	.accum_add_b  (accum_add_b),
 	.accum_incr   (accum_u_incr),
@@ -179,6 +191,7 @@ riscboy_ppu_phase_accum #(
 
 	.accum_wdata  (accum_wdata_v),
 	.accum_load   (accum_load),
+	.accum_hold   (accum_hold),
 	.accum_add_a  (accum_add_a),
 	.accum_add_b  (accum_add_b),
 	.accum_incr   (1'b0),
@@ -189,3 +202,7 @@ assign out_u = phase_u[W_COORD_FRAC +: W_COORD_INT];
 assign out_v = phase_v[W_COORD_FRAC +: W_COORD_INT];
 
 endmodule
+
+`ifndef YOSYS
+`default_nettype wire
+`endif
